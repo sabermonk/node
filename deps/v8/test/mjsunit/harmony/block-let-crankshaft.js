@@ -43,7 +43,7 @@ for (var i = 0; i < functions.length; ++i) {
   }
   %OptimizeFunctionOnNextCall(func);
   func(12);
-  assertTrue(%GetOptimizationStatus(func) != 2);
+  assertOptimized(func);
 }
 
 function f1() { }

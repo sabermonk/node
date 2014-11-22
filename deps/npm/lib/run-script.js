@@ -7,8 +7,6 @@ var lifecycle = require("./utils/lifecycle.js")
   , readJson = require("read-package-json")
   , log = require("npmlog")
   , chain = require("slide").chain
-  , fs = require("graceful-fs")
-  , asyncMap = require("slide").asyncMap
 
 runScript.usage = "npm run-script [<pkg>] <command>"
 
@@ -25,6 +23,7 @@ runScript.completion = function (opts, cb) {
     // or a package, in which case, complete against its scripts
     var json = path.join(npm.prefix, "package.json")
     return readJson(json, function (er, d) {
+      if (er && er.code !== "ENOENT" && er.code !== "ENOTDIR") return cb(er)
       if (er) d = {}
       var scripts = Object.keys(d.scripts || {})
       console.error("local scripts", scripts)
@@ -35,6 +34,7 @@ runScript.completion = function (opts, cb) {
       var pkgDir = path.resolve( pref, "node_modules"
                                , argv[2], "package.json" )
       readJson(pkgDir, function (er, d) {
+        if (er && er.code !== "ENOENT" && er.code !== "ENOTDIR") return cb(er)
         if (er) d = {}
         var scripts = Object.keys(d.scripts || {})
         return cb(null, scripts)
@@ -55,6 +55,7 @@ runScript.completion = function (opts, cb) {
 
   if (npm.config.get("global")) scripts = [], next()
   else readJson(path.join(npm.prefix, "package.json"), function (er, d) {
+    if (er && er.code !== "ENOENT" && er.code !== "ENOTDIR") return cb(er)
     d = d || {}
     scripts = Object.keys(d.scripts || {})
     next()
@@ -67,6 +68,7 @@ runScript.completion = function (opts, cb) {
 }
 
 function runScript (args, cb) {
+  if (!args.length) return list(cb)
   var pkgdir = args.length === 1 ? process.cwd()
              : path.resolve(npm.dir, args[0])
     , cmd = args.pop()
@@ -74,6 +76,36 @@ function runScript (args, cb) {
   readJson(path.resolve(pkgdir, "package.json"), function (er, d) {
     if (er) return cb(er)
     run(d, pkgdir, cmd, cb)
+  })
+}
+
+function list(cb) {
+  var json = path.join(npm.prefix, 'package.json')
+  return readJson(json, function(er, d) {
+    if (er && er.code !== 'ENOENT' && er.code !== 'ENOTDIR') return cb(er)
+    if (er) d = {}
+    var scripts = Object.keys(d.scripts || {})
+
+    if (log.level === "silent") {
+      return cb(null, scripts)
+    }
+
+    if (npm.config.get("json")) {
+      console.log(JSON.stringify(d.scripts || {}, null, 2))
+      return cb(null, scripts)
+    }
+
+    var s = ":"
+    var prefix = ""
+    if (!npm.config.get("parseable")) {
+      s = "\n    "
+      prefix = "  "
+      console.log("Available scripts in the %s package:", d.name)
+    }
+    scripts.forEach(function(script) {
+      console.log(prefix + script + s + d.scripts[script])
+    })
+    return cb(null, scripts)
   })
 }
 

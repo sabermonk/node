@@ -1,29 +1,6 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef V8_INTERFACE_H_
 #define V8_INTERFACE_H_
@@ -36,25 +13,41 @@ namespace internal {
 
 // This class implements the following abstract grammar of interfaces
 // (i.e. module types):
-//   interface ::= UNDETERMINED | VALUE | MODULE(exports)
+//   interface ::= UNDETERMINED | VALUE | CONST | MODULE(exports)
 //   exports ::= {name : interface, ...}
-// A frozen module type is one that is fully determined. Unification does not
-// allow adding additional exports to frozen interfaces.
-// Otherwise, unifying modules merges their exports.
+// A frozen type is one that is fully determined. Unification does not
+// allow to turn non-const values into const, or adding additional exports to
+// frozen interfaces. Otherwise, unifying modules merges their exports.
 // Undetermined types are unification variables that can be unified freely.
+// There is a natural subsort lattice that reflects the increase of knowledge:
+//
+//            undetermined
+//           //     |    \\                                                    .
+//       value  (frozen)  module
+//      //   \\  /    \  //
+//  const   fr.value  fr.module
+//      \\    /
+//     fr.const
+//
+// where the bold lines are the only transitions allowed.
 
 class Interface : public ZoneObject {
  public:
   // ---------------------------------------------------------------------------
   // Factory methods.
 
+  static Interface* NewUnknown(Zone* zone) {
+    return new(zone) Interface(NONE);
+  }
+
   static Interface* NewValue() {
     static Interface value_interface(VALUE + FROZEN);  // Cached.
     return &value_interface;
   }
 
-  static Interface* NewUnknown(Zone* zone) {
-    return new(zone) Interface(NONE);
+  static Interface* NewConst() {
+    static Interface value_interface(VALUE + CONST + FROZEN);  // Cached.
+    return &value_interface;
   }
 
   static Interface* NewModule(Zone* zone) {
@@ -80,22 +73,28 @@ class Interface : public ZoneObject {
     if (*ok) Chase()->flags_ |= VALUE;
   }
 
+  // Determine this interface to be an immutable interface.
+  void MakeConst(bool* ok) {
+    *ok = !IsModule() && (IsConst() || !IsFrozen());
+    if (*ok) Chase()->flags_ |= VALUE + CONST;
+  }
+
   // Determine this interface to be a module interface.
   void MakeModule(bool* ok) {
     *ok = !IsValue();
     if (*ok) Chase()->flags_ |= MODULE;
   }
 
-  // Set associated instance object.
-  void MakeSingleton(Handle<JSModule> instance, bool* ok) {
-    *ok = IsModule() && Chase()->instance_.is_null();
-    if (*ok) Chase()->instance_ = instance;
-  }
-
   // Do not allow any further refinements, directly or through unification.
   void Freeze(bool* ok) {
     *ok = IsValue() || IsModule();
     if (*ok) Chase()->flags_ |= FROZEN;
+  }
+
+  // Assign an index.
+  void Allocate(int index) {
+    ASSERT(IsModule() && IsFrozen() && Chase()->index_ == -1);
+    Chase()->index_ = index;
   }
 
   // ---------------------------------------------------------------------------
@@ -107,13 +106,32 @@ class Interface : public ZoneObject {
   // Check whether this is a value type.
   bool IsValue() { return Chase()->flags_ & VALUE; }
 
+  // Check whether this is a constant type.
+  bool IsConst() { return Chase()->flags_ & CONST; }
+
   // Check whether this is a module type.
   bool IsModule() { return Chase()->flags_ & MODULE; }
 
   // Check whether this is closed (i.e. fully determined).
   bool IsFrozen() { return Chase()->flags_ & FROZEN; }
 
-  Handle<JSModule> Instance() { return Chase()->instance_; }
+  bool IsUnified(Interface* that) {
+    return Chase() == that->Chase()
+        || (this->IsValue() == that->IsValue() &&
+            this->IsConst() == that->IsConst());
+  }
+
+  int Length() {
+    ASSERT(IsModule() && IsFrozen());
+    ZoneHashMap* exports = Chase()->exports_;
+    return exports ? exports->occupancy() : 0;
+  }
+
+  // The context slot in the hosting global context pointing to this module.
+  int Index() {
+    ASSERT(IsModule() && IsFrozen());
+    return Chase()->index_;
+  }
 
   // Look up an exported name. Returns NULL if not (yet) defined.
   Interface* Lookup(Handle<String> name, Zone* zone);
@@ -161,19 +179,21 @@ class Interface : public ZoneObject {
   enum Flags {    // All flags are monotonic
     NONE = 0,
     VALUE = 1,    // This type describes a value
-    MODULE = 2,   // This type describes a module
-    FROZEN = 4    // This type is fully determined
+    CONST = 2,    // This type describes a constant
+    MODULE = 4,   // This type describes a module
+    FROZEN = 8    // This type is fully determined
   };
 
   int flags_;
   Interface* forward_;     // Unification link
   ZoneHashMap* exports_;   // Module exports and their types (allocated lazily)
-  Handle<JSModule> instance_;
+  int index_;
 
   explicit Interface(int flags)
     : flags_(flags),
       forward_(NULL),
-      exports_(NULL) {
+      exports_(NULL),
+      index_(-1) {
 #ifdef DEBUG
     if (FLAG_print_interface_details)
       PrintF("# Creating %p\n", static_cast<void*>(this));

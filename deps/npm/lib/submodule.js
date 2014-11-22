@@ -5,10 +5,11 @@
 module.exports = submodule
 
 var npm = require("./npm.js")
-  , exec = require("./utils/exec.js")
   , cache = require("./cache.js")
+  , git = require("./utils/git.js")
   , asyncMap = require("slide").asyncMap
   , chain = require("slide").chain
+  , which = require("which")
 
 submodule.usage = "npm submodule <pkg>"
 
@@ -22,7 +23,7 @@ function submodule (args, cb) {
   if (args.length === 0) return cb(submodule.usage)
 
   asyncMap(args, function (arg, cb) {
-    cache.add(arg, cb)
+    cache.add(arg, null, false, cb)
   }, function (er, pkgs) {
     if (er) return cb(er)
     chain(pkgs.map(function (pkg) { return function (cb) {
@@ -55,26 +56,25 @@ function submodule_ (pkg, cb) {
 }
 
 function updateSubmodule (name, cb) {
-  exec( npm.config.get("git"), [ "submodule", "update", "--init"
-               , "node_modules/" + name ]
-      , null, true, npm.prefix, cb)
+  var args = [ "submodule", "update", "--init", "node_modules/", name ]
+
+  git.whichAndExec(args, cb)
 }
 
 function addSubmodule (name, url, cb) {
-  exec( npm.config.get("git"), [ "submodule", "add", url
-               , "node_modules/" + name ]
-      , null, true, npm.prefix, function (er) {
-    if (er) return cb(er)
-    updateSubmodule(name, cb)
-  })
+  var args = [ "submodule", "add", url, "node_modules/", name ]
+
+  git.whichAndExec(args, cb)
 }
 
 
-var getSubmodules = function getSubmodules (cb) {
-  exec( npm.config.get("git"), ["submodule", "status"], null, false
-      , npm.prefix, function (er, code, stdout, stderr) {
+var getSubmodules = function (cb) {
+  var args = [ "submodule", "status" ]
+
+  
+  git.whichAndExec(args, function _(er, stdout) {
     if (er) return cb(er)
-    res = stdout.trim().split(/\n/).map(function (line) {
+    var res = stdout.trim().split(/\n/).map(function (line) {
       return line.trim().split(/\s+/)[1]
     }).filter(function (line) {
       // only care about submodules in the node_modules folder.

@@ -1,58 +1,68 @@
-
 module.exports = docs
 
-docs.usage = "npm docs <pkgname>"
+docs.usage  = "npm docs <pkgname>"
+docs.usage += "\n"
+docs.usage += "npm docs ."
 
 docs.completion = function (opts, cb) {
-  if (opts.conf.argv.remain.length > 2) return cb()
-  registry.get("/-/short", 60000, function (er, list) {
+  var uri = url_.resolve(npm.config.get("registry"), "/-/short")
+  registry.get(uri, { timeout : 60000 }, function (er, list) {
     return cb(null, list || [])
   })
 }
 
-var exec = require("./utils/exec.js")
+var url_ = require("url")
   , npm = require("./npm.js")
   , registry = npm.registry
+  , opener = require("opener")
+  , path = require("path")
   , log = require("npmlog")
 
+function url (json) {
+  return json.homepage ? json.homepage : "https://npmjs.org/package/" + json.name
+}
+
 function docs (args, cb) {
-  if (!args.length) return cb(docs.usage)
-  var n = args[0].split("@").shift()
-  registry.get(n + "/latest", 3600, function (er, d) {
-    if (er) return cb(er)
-    var homepage = d.homepage
-      , repo = d.repository || d.repositories
-    if (homepage) return open(homepage, cb)
-    if (repo) {
-      if (Array.isArray(repo)) repo = repo.shift()
-      if (repo.hasOwnProperty("url")) repo = repo.url
-      log.verbose("repository", repo)
-      if (repo) {
-        return open(repo.replace(/^git(@|:\/\/)/, 'http://')
-                        .replace(/\.git$/, '')+"#readme", cb)
+  args = args || []
+  var pending = args.length
+  if (!pending) return getDoc('.', cb)
+  args.forEach(function(proj) {
+    getDoc(proj, function(err) {
+      if (err) {
+        return cb(err)
       }
-    }
-    return open("http://search.npmjs.org/#/" + d.name, cb)
+      --pending || cb()
+    })
   })
 }
 
-function open (url, cb) {
-  var args = [url]
-    , browser = npm.config.get("browser")
+function getDoc (project, cb) {
+  project = project || '.'
+  var package = path.resolve(process.cwd(), "package.json")
 
-  if (process.platform === "win32" && browser === "start") {
-    args = [ "/c", "start" ].concat(args)
-    browser = "cmd"
+  if (project === '.' || project === './') {
+    var json
+    try {
+      json = require(package)
+      if (!json.name) throw new Error('package.json does not have a valid "name" property')
+      project = json.name
+    } catch (e) {
+      log.error(e.message)
+      return cb(docs.usage)
+    }
+
+    return opener(url(json), { command: npm.config.get("browser") }, cb)
   }
 
-  if (!browser) {
-    var er = ["the 'browser' config is not set.  Try doing this:"
-             ,"    npm config set browser google-chrome"
-             ,"or:"
-             ,"    npm config set browser lynx"].join("\n")
-    return cb(er)
-  }
+  var uri = url_.resolve(npm.config.get("registry"), project + "/latest")
+  registry.get(uri, { timeout : 3600 }, function (er, json) {
+    var github = "https://github.com/" + project + "#readme"
 
-  exec(browser, args, process.env, false, function () {})
-  cb()
+    if (er) {
+      if (project.split("/").length !== 2) return cb(er)
+      return opener(github, { command: npm.config.get("browser") }, cb)
+    }
+
+    return opener(url(json), { command: npm.config.get("browser") }, cb)
+  })
 }

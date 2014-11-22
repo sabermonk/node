@@ -1,29 +1,6 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #ifndef V8_V8GLOBALS_H_
 #define V8_V8GLOBALS_H_
@@ -52,15 +29,6 @@ const intptr_t kPointerAlignmentMask = kPointerAlignment - 1;
 const intptr_t kDoubleAlignment = 8;
 const intptr_t kDoubleAlignmentMask = kDoubleAlignment - 1;
 
-// Desired alignment for maps.
-#if V8_HOST_ARCH_64_BIT
-const intptr_t kMapAlignmentBits = kObjectAlignmentBits;
-#else
-const intptr_t kMapAlignmentBits = kObjectAlignmentBits + 3;
-#endif
-const intptr_t kMapAlignment = (1 << kMapAlignmentBits);
-const intptr_t kMapAlignmentMask = kMapAlignment - 1;
-
 // Desired alignment for generated code is 32 bytes (to improve cache line
 // utilization).
 const int kCodeAlignmentBits = 5;
@@ -68,6 +36,7 @@ const intptr_t kCodeAlignment = 1 << kCodeAlignmentBits;
 const intptr_t kCodeAlignmentMask = kCodeAlignment - 1;
 
 // Tag information for Failure.
+// TODO(yangguo): remove this from space owner calculation.
 const int kFailureTag = 3;
 const int kFailureTagSize = 2;
 const intptr_t kFailureTagMask = (1 << kFailureTagSize) - 1;
@@ -80,6 +49,8 @@ const Address kZapValue =
     reinterpret_cast<Address>(V8_UINT64_C(0xdeadbeedbeadbeef));
 const Address kHandleZapValue =
     reinterpret_cast<Address>(V8_UINT64_C(0x1baddead0baddeaf));
+const Address kGlobalHandleZapValue =
+    reinterpret_cast<Address>(V8_UINT64_C(0x1baffed00baffedf));
 const Address kFromSpaceZapValue =
     reinterpret_cast<Address>(V8_UINT64_C(0x1beefdad0beefdaf));
 const uint64_t kDebugZapValue = V8_UINT64_C(0xbadbaddbbadbaddb);
@@ -88,12 +59,14 @@ const uint64_t kFreeListZapValue = 0xfeed1eaffeed1eaf;
 #else
 const Address kZapValue = reinterpret_cast<Address>(0xdeadbeef);
 const Address kHandleZapValue = reinterpret_cast<Address>(0xbaddeaf);
+const Address kGlobalHandleZapValue = reinterpret_cast<Address>(0xbaffedf);
 const Address kFromSpaceZapValue = reinterpret_cast<Address>(0xbeefdaf);
 const uint32_t kSlotsZapValue = 0xbeefdeef;
 const uint32_t kDebugZapValue = 0xbadbaddb;
 const uint32_t kFreeListZapValue = 0xfeed1eaf;
 #endif
 
+const int kCodeZapValue = 0xbadc0de;
 
 // Number of bits to represent the page size for paged spaces. The value of 20
 // gives 1Mb bytes per page.
@@ -102,7 +75,7 @@ const int kPageSizeBits = 20;
 // On Intel architecture, cache line size is 64 bytes.
 // On ARM it may be less (32 bytes), but as far this constant is
 // used for aligning data, it doesn't hurt to align on a greater value.
-const int kProcessorCacheLineSize = 64;
+#define PROCESSOR_CACHE_LINE_SIZE 64
 
 // Constants relevant to double precision floating point numbers.
 // If looking only at the top 32 bits, the QNaN mask is bits 19 to 30.
@@ -116,7 +89,6 @@ class AccessorInfo;
 class Allocation;
 class Arguments;
 class Assembler;
-class AssertNoAllocation;
 class Code;
 class CodeGenerator;
 class CodeStub;
@@ -126,18 +98,22 @@ class Debugger;
 class DebugInfo;
 class Descriptor;
 class DescriptorArray;
+class TransitionArray;
 class ExternalReference;
 class FixedArray;
 class FunctionTemplateInfo;
 class MemoryChunk;
 class SeededNumberDictionary;
 class UnseededNumberDictionary;
-class StringDictionary;
+class NameDictionary;
+template <typename T> class MaybeHandle;
 template <typename T> class Handle;
 class Heap;
 class HeapObject;
 class IC;
 class InterceptorInfo;
+class Isolate;
+class JSReceiver;
 class JSArray;
 class JSFunction;
 class JSObject;
@@ -149,7 +125,6 @@ class MapSpace;
 class MarkCompactCollector;
 class NewSpace;
 class Object;
-class MaybeObject;
 class OldSpace;
 class Foreign;
 class Scope;
@@ -159,15 +134,15 @@ class Smi;
 template <typename Config, class Allocator = FreeStoreAllocationPolicy>
     class SplayTree;
 class String;
+class Name;
 class Struct;
 class Variable;
 class RelocInfo;
 class Deserializer;
 class MessageLocation;
-class ObjectGroup;
-class TickSample;
 class VirtualMemory;
 class Mutex;
+class RecursiveMutex;
 
 typedef bool (*WeakSlotCallback)(Object** pointer);
 
@@ -185,12 +160,14 @@ enum AllocationSpace {
   CODE_SPACE,           // No pointers to new space, marked executable.
   MAP_SPACE,            // Only and all map objects.
   CELL_SPACE,           // Only and all cell objects.
+  PROPERTY_CELL_SPACE,  // Only and all global property cell objects.
   LO_SPACE,             // Promoted large objects.
+  INVALID_SPACE,        // Only used in AllocationResult to signal success.
 
   FIRST_SPACE = NEW_SPACE,
   LAST_SPACE = LO_SPACE,
   FIRST_PAGED_SPACE = OLD_POINTER_SPACE,
-  LAST_PAGED_SPACE = CELL_SPACE
+  LAST_PAGED_SPACE = PROPERTY_CELL_SPACE
 };
 const int kSpaceTagSize = 3;
 const int kSpaceTagMask = (1 << kSpaceTagSize) - 1;
@@ -201,6 +178,11 @@ const int kSpaceTagMask = (1 << kSpaceTagSize) - 1;
 // (allocated in the young generation if the object size and type
 // allows).
 enum PretenureFlag { NOT_TENURED, TENURED };
+
+enum MinimumCapacity {
+  USE_DEFAULT_MINIMUM_CAPACITY,
+  USE_CUSTOM_MINIMUM_CAPACITY
+};
 
 enum GarbageCollector { SCAVENGER, MARK_COMPACTOR };
 
@@ -267,28 +249,29 @@ enum InlineCacheState {
   // Like MONOMORPHIC but check failed due to prototype.
   MONOMORPHIC_PROTOTYPE_FAILURE,
   // Multiple receiver types have been seen.
+  POLYMORPHIC,
+  // Many receiver types have been seen.
   MEGAMORPHIC,
-  // Special states for debug break or step in prepare stubs.
-  DEBUG_BREAK,
-  DEBUG_PREPARE_STEP_IN
-};
-
-
-enum CheckType {
-  RECEIVER_MAP_CHECK,
-  STRING_CHECK,
-  NUMBER_CHECK,
-  BOOLEAN_CHECK
+  // A generic handler is installed and no extra typefeedback is recorded.
+  GENERIC,
+  // Special state for debug break or step in prepare stubs.
+  DEBUG_STUB
 };
 
 
 enum CallFunctionFlags {
-  NO_CALL_FUNCTION_FLAGS = 0,
-  // Receiver might implicitly be the global objects. If it is, the
-  // hole is passed to the call function stub.
-  RECEIVER_MIGHT_BE_IMPLICIT = 1 << 0,
+  NO_CALL_FUNCTION_FLAGS,
+  CALL_AS_METHOD,
+  // Always wrap the receiver and call to the JSFunction. Only use this flag
+  // both the receiver type and the target method are statically known.
+  WRAP_AND_CALL
+};
+
+
+enum CallConstructorFlags {
+  NO_CALL_CONSTRUCTOR_FLAGS,
   // The call target is cached in the instruction stream.
-  RECORD_CALL_TARGET = 1 << 1
+  RECORD_CONSTRUCTOR_TARGET
 };
 
 
@@ -311,19 +294,14 @@ typedef void (*StoreBufferCallback)(Heap* heap,
                                     StoreBufferEvent event);
 
 
-// Whether to remove map transitions and constant transitions from a
-// DescriptorArray.
-enum TransitionFlag {
-  REMOVE_TRANSITIONS,
-  KEEP_TRANSITIONS
-};
-
-
 // Union used for fast testing of specific double values.
 union DoubleRepresentation {
   double  value;
   int64_t bits;
   DoubleRepresentation(double x) { value = x; }
+  bool operator==(const DoubleRepresentation& other) const {
+    return bits == other.bits;
+  }
 };
 
 
@@ -354,8 +332,9 @@ union IeeeDoubleBigEndianArchType {
 
 // AccessorCallback
 struct AccessorDescriptor {
-  MaybeObject* (*getter)(Object* object, void* data);
-  MaybeObject* (*setter)(JSObject* object, Object* value, void* data);
+  Object* (*getter)(Isolate* isolate, Object* object, void* data);
+  Object* (*setter)(
+      Isolate* isolate, JSObject* object, Object* value, void* data);
   void* data;
 };
 
@@ -366,19 +345,13 @@ struct AccessorDescriptor {
 // VMState object leaves a state by popping the current state from the
 // stack.
 
-#define STATE_TAG_LIST(V) \
-  V(JS)                   \
-  V(GC)                   \
-  V(COMPILER)             \
-  V(OTHER)                \
-  V(EXTERNAL)
-
 enum StateTag {
-#define DEF_STATE_TAG(name) name,
-  STATE_TAG_LIST(DEF_STATE_TAG)
-#undef DEF_STATE_TAG
-  // Pseudo-types.
-  state_tag_count
+  JS,
+  GC,
+  COMPILER,
+  OTHER,
+  EXTERNAL,
+  IDLE
 };
 
 
@@ -400,10 +373,6 @@ enum StateTag {
 // POINTER_SIZE_ALIGN returns the value aligned as a pointer.
 #define POINTER_SIZE_ALIGN(value)                               \
   (((value) + kPointerAlignmentMask) & ~kPointerAlignmentMask)
-
-// MAP_POINTER_ALIGN returns the value aligned as a map pointer.
-#define MAP_POINTER_ALIGN(value)                                \
-  (((value) + kMapAlignmentMask) & ~kMapAlignmentMask)
 
 // CODE_POINTER_ALIGN returns the value aligned as a generated code segment.
 #define CODE_POINTER_ALIGN(value)                               \
@@ -431,17 +400,18 @@ enum StateTag {
 
 
 // Feature flags bit positions. They are mostly based on the CPUID spec.
-// (We assign CPUID itself to one of the currently reserved bits --
-// feel free to change this if needed.)
 // On X86/X64, values below 32 are bits in EDX, values above 32 are bits in ECX.
 enum CpuFeature { SSE4_1 = 32 + 19,  // x86
                   SSE3 = 32 + 0,     // x86
                   SSE2 = 26,   // x86
                   CMOV = 15,   // x86
-                  RDTSC = 4,   // x86
-                  CPUID = 10,  // x86
                   VFP3 = 1,    // ARM
                   ARMv7 = 2,   // ARM
+                  SUDIV = 3,   // ARM
+                  UNALIGNED_ACCESSES = 4,  // ARM
+                  MOVW_MOVT_IMMEDIATE_LOADS = 5,  // ARM
+                  VFP32DREGS = 6,  // ARM
+                  NEON = 7,    // ARM
                   SAHF = 0,    // x86
                   FPU = 1};    // MIPS
 
@@ -451,14 +421,6 @@ enum CpuFeature { SSE4_1 = 32 + 19,  // x86
 enum SmiCheckType {
   DONT_DO_SMI_CHECK,
   DO_SMI_CHECK
-};
-
-
-// Used to specify whether a receiver is implicitly or explicitly
-// provided to a call.
-enum CallKind {
-  CALL_AS_METHOD,
-  CALL_AS_FUNCTION
 };
 
 
@@ -483,17 +445,26 @@ const uint64_t kLastNonNaNInt64 =
     (static_cast<uint64_t>(kNaNOrInfinityLowerBoundUpper32) << 32);
 
 
+// The order of this enum has to be kept in sync with the predicates below.
 enum VariableMode {
   // User declared variables:
   VAR,             // declared via 'var', and 'function' declarations
 
+  CONST_LEGACY,    // declared via legacy 'const' declarations
+
+  LET,             // declared via 'let' declarations (first lexical)
+
   CONST,           // declared via 'const' declarations
 
-  CONST_HARMONY,   // declared via 'const' declarations in harmony mode
-
-  LET,             // declared via 'let' declarations
+  MODULE,          // declared via 'module' declaration (last lexical)
 
   // Variables introduced by the compiler:
+  INTERNAL,        // like VAR, but not user-visible (may or may not
+                   // be in a context)
+
+  TEMPORARY,       // temporary variables (not user-visible), stack-allocated
+                   // unless the scope as a whole has forced context allocation
+
   DYNAMIC,         // always require dynamic lookup (we don't know
                    // the declaration)
 
@@ -501,17 +472,31 @@ enum VariableMode {
                    // variable is global unless it has been shadowed
                    // by an eval-introduced variable
 
-  DYNAMIC_LOCAL,   // requires dynamic lookup, but we know that the
+  DYNAMIC_LOCAL    // requires dynamic lookup, but we know that the
                    // variable is local and where it is unless it
                    // has been shadowed by an eval-introduced
                    // variable
-
-  INTERNAL,        // like VAR, but not user-visible (may or may not
-                   // be in a context)
-
-  TEMPORARY        // temporary variables (not user-visible), never
-                   // in a context
 };
+
+
+inline bool IsDynamicVariableMode(VariableMode mode) {
+  return mode >= DYNAMIC && mode <= DYNAMIC_LOCAL;
+}
+
+
+inline bool IsDeclaredVariableMode(VariableMode mode) {
+  return mode >= VAR && mode <= MODULE;
+}
+
+
+inline bool IsLexicalVariableMode(VariableMode mode) {
+  return mode >= LET && mode <= MODULE;
+}
+
+
+inline bool IsImmutableVariableMode(VariableMode mode) {
+  return (mode >= CONST && mode <= MODULE) || mode == CONST_LEGACY;
+}
 
 
 // ES6 Draft Rev3 10.2 specifies declarative environment records with mutable
@@ -557,6 +542,13 @@ enum ClearExceptionFlag {
 };
 
 
+enum MinusZeroMode {
+  TREAT_MINUS_ZERO_AS_ZERO,
+  FAIL_ON_MINUS_ZERO
+};
+
 } }  // namespace v8::internal
+
+namespace i = v8::internal;
 
 #endif  // V8_V8GLOBALS_H_

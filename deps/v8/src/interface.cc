@@ -1,29 +1,6 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "v8.h"
 
@@ -35,8 +12,8 @@ namespace internal {
 static bool Match(void* key1, void* key2) {
   String* name1 = *static_cast<String**>(key1);
   String* name2 = *static_cast<String**>(key2);
-  ASSERT(name1->IsSymbol());
-  ASSERT(name2->IsSymbol());
+  ASSERT(name1->IsInternalizedString());
+  ASSERT(name2->IsInternalizedString());
   return name1 == name2;
 }
 
@@ -89,9 +66,10 @@ void Interface::DoAdd(
   ZoneHashMap** map = &Chase()->exports_;
   ZoneAllocationPolicy allocator(zone);
 
-  if (*map == NULL)
-    *map = new ZoneHashMap(Match, ZoneHashMap::kDefaultHashMapCapacity,
-                           allocator);
+  if (*map == NULL) {
+    *map = new(zone->New(sizeof(ZoneHashMap)))
+        ZoneHashMap(Match, ZoneHashMap::kDefaultHashMapCapacity, allocator);
+  }
 
   ZoneHashMap::Entry* p = (*map)->Lookup(name, hash, !IsFrozen(), allocator);
   if (p == NULL) {
@@ -124,8 +102,16 @@ void Interface::Unify(Interface* that, Zone* zone, bool* ok) {
 
   *ok = true;
   if (this == that) return;
-  if (this->IsValue()) return that->MakeValue(ok);
-  if (that->IsValue()) return this->MakeValue(ok);
+  if (this->IsValue()) {
+    that->MakeValue(ok);
+    if (*ok && this->IsConst()) that->MakeConst(ok);
+    return;
+  }
+  if (that->IsValue()) {
+    this->MakeValue(ok);
+    if (*ok && that->IsConst()) this->MakeConst(ok);
+    return;
+  }
 
 #ifdef DEBUG
   if (FLAG_print_interface_details) {
@@ -162,6 +148,8 @@ void Interface::DoUnify(Interface* that, bool* ok, Zone* zone) {
   ASSERT(that->forward_ == NULL);
   ASSERT(!this->IsValue());
   ASSERT(!that->IsValue());
+  ASSERT(this->index_ == -1);
+  ASSERT(that->index_ == -1);
   ASSERT(*ok);
 
 #ifdef DEBUG
@@ -186,15 +174,6 @@ void Interface::DoUnify(Interface* that, bool* ok, Zone* zone) {
     return;
   }
 
-  // Merge instance.
-  if (!that->instance_.is_null()) {
-    if (!this->instance_.is_null() && *this->instance_ != *that->instance_) {
-      *ok = false;
-      return;
-    }
-    this->instance_ = that->instance_;
-  }
-
   // Merge interfaces.
   this->flags_ |= that->flags_;
   that->forward_ = this;
@@ -214,10 +193,12 @@ void Interface::Print(int n) {
 
   if (IsUnknown()) {
     PrintF("unknown\n");
+  } else if (IsConst()) {
+    PrintF("const\n");
   } else if (IsValue()) {
     PrintF("value\n");
   } else if (IsModule()) {
-    PrintF("module %s{", IsFrozen() ? "" : "(unresolved) ");
+    PrintF("module %d %s{", Index(), IsFrozen() ? "" : "(unresolved) ");
     ZoneHashMap* map = Chase()->exports_;
     if (map == NULL || map->occupancy() == 0) {
       PrintF("}\n");

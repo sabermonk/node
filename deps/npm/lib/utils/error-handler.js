@@ -7,14 +7,15 @@ var cbCalled = false
   , rm = require("rimraf")
   , itWorked = false
   , path = require("path")
-  , ini = require("./ini.js")
   , wroteLogFile = false
   , exitCode = 0
+  , rollbacks = npm.rollbacks
+  , chain = require("slide").chain
 
 
 process.on("exit", function (code) {
   // console.error("exit", code)
-  if (!ini.resolved) return
+  if (!npm.config || !npm.config.loaded) return
   if (code) itWorked = false
   if (itWorked) log.info("ok")
   else {
@@ -45,14 +46,30 @@ process.on("exit", function (code) {
 })
 
 function exit (code, noLog) {
-  exitCode = exitCode || code
+  exitCode = exitCode || process.exitCode || code
 
-  var doExit = npm.config.get("_exit")
+  var doExit = npm.config ? npm.config.get("_exit") : true
   log.verbose("exit", [code, doExit])
   if (log.level === "silent") noLog = true
 
-  if (code && !noLog) writeLogFile(reallyExit)
-  else rm("npm-debug.log", function () { rm(npm.tmp, reallyExit) })
+  if (rollbacks.length) {
+    chain(rollbacks.map(function (f) {
+      return function (cb) {
+        npm.commands.unbuild([f], true, cb)
+      }
+    }), function (er) {
+      if (er) {
+        log.error("error rolling back", er)
+        if (!code) errorHandler(er)
+        else reallyExit(er)
+      } else {
+        rm("npm-debug.log", reallyExit)
+      }
+    })
+    rollbacks.length = 0
+  }
+  else if (code && !noLog) writeLogFile(reallyExit)
+  else reallyExit()
 
   function reallyExit() {
     // truncate once it's been written.
@@ -64,6 +81,7 @@ function exit (code, noLog) {
     // if we're really exiting, then let it exit on its own, so that
     // in-process stuff can finish or clean up first.
     if (!doExit) process.emit("exit", code)
+    npm.spinner.stop()
   }
 }
 
@@ -71,7 +89,7 @@ function exit (code, noLog) {
 function errorHandler (er) {
   var printStack = false
   // console.error("errorHandler", er)
-  if (!ini.resolved) {
+  if (!npm.config || !npm.config.loaded) {
     // logging won't work unless we pretend that it's ready
     er = er || new Error("Exit prior to config file resolving.")
     console.error(er.stack || er.message)
@@ -112,7 +130,6 @@ function errorHandler (er) {
     break
 
   case "ELIFECYCLE":
-    er.code = "ELIFECYCLE"
     log.error("", er.message)
     log.error("", ["","Failed at the "+er.pkgid+" "+er.stage+" script."
               ,"This is most likely a problem with the "+er.pkgname+" package,"
@@ -125,8 +142,15 @@ function errorHandler (er) {
               ].join("\n"))
     break
 
+  case "ENOGIT":
+    log.error("", er.message)
+    log.error("", ["","Failed using git."
+              ,"This is most likely not a problem with npm itself."
+              ,"Please check if you have git installed and in your PATH."
+              ].join("\n"))
+    break
+
   case "EJSONPARSE":
-    er.code = "EJSONPARSE"
     log.error("", er.message)
     log.error("", "File: "+er.file)
     log.error("", ["Failed to parse package.json data."
@@ -137,10 +161,13 @@ function errorHandler (er) {
     break
 
   case "E404":
-    er.code = "E404"
+    var msg = [er.message]
     if (er.pkgid && er.pkgid !== "-") {
-      var msg = ["'"+er.pkgid+"' is not in the npm registry."
-                ,"You should bug the author to publish it"]
+      msg.push("", "'"+er.pkgid+"' is not in the npm registry."
+              ,"You should bug the author to publish it")
+      if (er.parent) {
+        msg.push("It was specified as a dependency of '"+er.parent+"'")
+      }
       if (er.pkgid.match(/^node[\.\-]|[\.\-]js$/)) {
         var s = er.pkgid.replace(/^node[\.\-]|[\.\-]js$/g, "")
         if (s !== er.pkgid) {
@@ -150,21 +177,23 @@ function errorHandler (er) {
       }
       msg.push("\nNote that you can also install from a"
               ,"tarball, folder, or http url, or git url.")
-      log.error("404", msg.join("\n"))
     }
+    log.error("404", msg.join("\n"))
     break
 
   case "EPUBLISHCONFLICT":
-    er.code = "EPUBLISHCONFLICT"
     log.error("publish fail", ["Cannot publish over existing version."
-              ,"Bump the 'version' field, set the --force flag, or"
-              ,"    npm unpublish '"+er.pkgid+"'"
-              ,"and try again"
+              ,"Update the 'version' field in package.json and try again."
+              ,""
+              ,"If the previous version was published in error, see:"
+              ,"    npm help unpublish"
+              ,""
+              ,"To automatically increment version numbers, see:"
+              ,"    npm help version"
               ].join("\n"))
     break
 
   case "EISGIT":
-    er.code = "EISGIT"
     log.error("git", [er.message
               ,"    "+er.path
               ,"Refusing to remove it. Update manually,"
@@ -173,7 +202,6 @@ function errorHandler (er) {
     break
 
   case "ECYCLE":
-    er.code = "ECYCLE"
     log.error("cycle", [er.message
               ,"While installing: "+er.pkgid
               ,"Found a pathological dependency case that npm cannot solve."
@@ -182,7 +210,6 @@ function errorHandler (er) {
     break
 
   case "EBADPLATFORM":
-    er.code = "EBADPLATFORM"
     log.error("notsup", [er.message
               ,"Not compatible with your operating system or architecture: "+er.pkgid
               ,"Valid OS:    "+er.os.join(",")
@@ -198,6 +225,47 @@ function errorHandler (er) {
               ,"Move it away, and try again."].join("\n"))
     break
 
+  case "ENEEDAUTH":
+    log.error("need auth", [er.message
+              ,"You need to authorize this machine using `npm adduser`"
+              ].join("\n"))
+    break
+
+  case "EPEERINVALID":
+    var peerErrors = Object.keys(er.peersDepending).map(function (peer) {
+      return "Peer " + peer + " wants " + er.packageName + "@"
+        + er.peersDepending[peer]
+    })
+    log.error("peerinvalid", [er.message].concat(peerErrors).join("\n"))
+    break
+
+  case "ECONNRESET":
+  case "ENOTFOUND":
+  case "ETIMEDOUT":
+    log.error("network", [er.message
+              ,"This is most likely not a problem with npm itself"
+              ,"and is related to network connectivity."
+              ,"In most cases you are behind a proxy or have bad network settings."
+              ,"\nIf you are behind a proxy, please make sure that the"
+              ,"'proxy' config is set properly.  See: 'npm help config'"
+              ].join("\n"))
+    break
+
+  case "ENOPACKAGEJSON":
+    log.error("package.json", [er.message
+              ,"This is most likely not a problem with npm itself."
+              ,"npm can't find a package.json file in your current directory."
+              ].join("\n"))
+    break
+
+  case "ETARGET":
+    log.error("notarget", [er.message
+              ,"This is most likely not a problem with npm itself."
+              ,"In most cases you or one of your dependencies are requesting"
+              ,"a package version that doesn't exist."
+              ].join("\n"))
+    break
+
   case "ENOTSUP":
     if (er.required) {
       log.error("notsup", [er.message
@@ -210,12 +278,27 @@ function errorHandler (er) {
       break
     } // else passthrough
 
+  case "ENOSPC":
+    log.error("nospc", [er.message
+              ,"This is most likely not a problem with npm itself"
+              ,"and is related to insufficient space on your system."
+              ].join("\n"))
+    break
+
+  case "EROFS":
+    log.error("rofs", [er.message
+              ,"This is most likely not a problem with npm itself"
+              ,"and is related to the file system being read-only."
+              ,"\nOften virtualized file systems, or other file systems"
+              ,"that don't support symlinks, give this error."
+              ].join("\n"))
+    break
+
   default:
     log.error("", er.stack || er.message || er)
-    log.error("", ["If you need help, you may report this log at:"
-                  ,"    <http://github.com/isaacs/npm/issues>"
-                  ,"or email it to:"
-                  ,"    <npm-@googlegroups.com>"
+    log.error("", ["If you need help, you may report this *entire* log,"
+                  ,"including the npm and node versions, at:"
+                  ,"    <http://github.com/npm/npm/issues>"
                   ].join("\n"))
     printStack = false
     break
@@ -223,7 +306,7 @@ function errorHandler (er) {
 
   var os = require("os")
   // just a line break
-  console.error("")
+  if (log.levels[log.level] <= log.levels.error) console.error("")
   log.error("System", os.type() + " " + os.release())
   log.error("command", process.argv
             .map(JSON.stringify).join(" "))
@@ -268,7 +351,7 @@ function writeLogFile (cb) {
   var fs = require("graceful-fs")
     , fstr = fs.createWriteStream("npm-debug.log")
     , util = require("util")
-    , eol = process.platform === "win32" ? "\r\n" : "\n"
+    , os = require("os")
     , out = ""
 
   log.record.forEach(function (m) {
@@ -279,7 +362,7 @@ function writeLogFile (cb) {
     m.message.trim().split(/\r?\n/).map(function (line) {
       return (pref + ' ' + line).trim()
     }).forEach(function (line) {
-      out += line + eol
+      out += line + os.EOL
     })
   })
 

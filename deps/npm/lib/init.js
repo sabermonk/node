@@ -12,6 +12,7 @@ init.usage = "npm init"
 function init (args, cb) {
   var dir = process.cwd()
   log.pause()
+  npm.spinner.stop()
   var initFile = npm.config.get('init-module')
 
   console.log(
@@ -27,10 +28,14 @@ function init (args, cb) {
     ,"Press ^C at any time to quit."
     ].join("\n"))
 
-  initJson(dir, initFile, npm.config.get(), function (er, data) {
+  initJson(dir, initFile, npm.config, function (er, data) {
     log.resume()
     log.silly('package data', data)
     log.info('init', 'written successfully')
+    if (er && er.message === 'canceled') {
+      log.warn('init', 'canceled')
+      return cb(null, data)
+    }
     cb(er, data)
   })
 }

@@ -36,8 +36,6 @@ INLINE static void uv_stream_init(uv_loop_t* loop,
   uv__handle_init(loop, (uv_handle_t*) handle, type);
   handle->write_queue_size = 0;
   handle->activecnt = 0;
-
-  loop->counters.stream_init++;
 }
 
 
@@ -54,16 +52,5 @@ INLINE static void uv_connection_init(uv_stream_t* handle) {
   handle->shutdown_req = NULL;
 }
 
-
-INLINE static size_t uv_count_bufs(uv_buf_t bufs[], int count) {
-  size_t bytes = 0;
-  int i;
-
-  for (i = 0; i < count; i++) {
-    bytes += (size_t)bufs[i].len;
-  }
-
-  return bytes;
-}
 
 #endif /* UV_WIN_STREAM_INL_H_ */
